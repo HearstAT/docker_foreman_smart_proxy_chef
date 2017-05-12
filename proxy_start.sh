@@ -19,9 +19,13 @@ cat > '/usr/src/proxy/config/settings.d/chef.yml' << EOF
 # smart-proxy client node needs to have some admin right on chef-server
 # in order to retrive all nodes public keys
 # e.g. 'host.example.net'
+if [ -n ${ORG_CLIENT} ]; then
+:chef_smartproxy_clientname: ${ORG_CLIENT}
+else
 :chef_smartproxy_clientname: pivotal
+fi
 # e.g. /etc/chef/client.pem
-:chef_smartproxy_privatekey: /usr/src/proxy/chef/pivotal.pem
+:chef_smartproxy_privatekey: /usr/src/proxy/chef/org.pem
 
 # turning of chef_ssl_verify is not recommended as it turn off authentication
 # you can try set path to chef server certificate by chef_ssl_pem_file

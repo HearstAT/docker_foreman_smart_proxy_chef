@@ -11,24 +11,38 @@ Dockerized Foreman Smart Proxy for Multiple Chef Organizations
 *   [License](#license)
 
 ## Info
-**Currently best suited for testing/dev purposes until automated alternative for pivotal pem is found**
 
 *   Installs from Smart Proxy Git repo
 *   Installs Smart Proxy Chef Plugin from Gem
 *   Takes Environment Variables from Docker and creates configs based on those
-*   Utilizes pivotal.pem for now, this will change in the future
+*   Only Utilize pivotal.pem for test/non-prod setups!
+    *   Create clients w/ admin permissions for orgs and utilize those keys instead
 
 ## Usage
 
 ### Minimum
 This container requires a few items to run appropriately
 
+#### Pivotal (For testing only)
+**Note**: Example shows pivotal, if no ORG_CLIENT passed the client name defaults to pivotal
 ```bash
 docker run \
   -e FOREMAN_URL='https://foreman.domain.com' \
   -e CHEF_URL='https://chef.domain.com' \
   -e CHEF_ORG='myorg' \
-  -v /path/to/pivotal.pem:/usr/src/proxy/chef/pivotal.pem
+  -v /path/to/pivotal.pem:/usr/src/proxy/chef/org.pem
+  -d hearstat/chef-smart-proxy
+```
+
+#### Org Client (Recommended)
+To set to a specific client and a non-pivotal setups
+```bash
+docker run \
+  -e FOREMAN_URL='https://foreman.domain.com' \
+  -e CHEF_URL='https://chef.domain.com' \
+  -e CHEF_ORG='myorg' \
+  -e ORG_CLIENT='myclient'
+  -v /path/to/myclient.pem:/usr/src/proxy/chef/org.pem
   -d hearstat/chef-smart-proxy
 ```
 
@@ -42,6 +56,9 @@ proxy:
     - FOREMAN_URL='https://foreman.domain.com'
     - CHEF_URL='https://foreman.domain.com'
     - CHEF_ORG='https://foreman.domain.com'
+    - ORG_CLIENT='myclient'
+  volumes:
+    - /path/to/myclient.pem:/usr/src/proxy/chef/org.pem
   ports:
     - 8000:8000
 ```
@@ -49,8 +66,8 @@ proxy:
 ### Automated Projects
 Projects by Hearst Automation Team that use this Image
 
-*   [The Foreman Cloudformation]() **In Progress**
-*   [The Foreman Docker Compose]() **In Progress**
+*   [The Foreman Cloudformation](https://github.com/HearstAT/cfn_foreman) **In Progress**
+*   [The Foreman Docker Dev](https://github.com/HearstAT/docker_foreman_dev) **In Progress**
 
 ## Development
 
