@@ -5,7 +5,6 @@ Dockerized Foreman Smart Proxy for Multiple Chef Organizations
 
 *   [Info](#info)
 *   [Usage](#usage)
-*   [Development](#development)
 *   [Contributing](#contributing)
 *   [Credits](#credits)
 *   [License](#license)
@@ -20,7 +19,7 @@ Dockerized Foreman Smart Proxy for Multiple Chef Organizations
 
 ## Usage
 
-### Minimum
+### Command Line
 This container requires a few items to run appropriately
 
 #### Pivotal (For testing only)
@@ -46,11 +45,28 @@ docker run \
   -d hearstat/chef-smart-proxy
 ```
 
-### Compose Config
+### Docker Compose
 
+#### Dockerhub Image
 ```yaml
 proxy:
   image: hearstat/chef-smart-proxy
+  command: proxy_start
+  environment:
+    - FOREMAN_URL='https://foreman.domain.com'
+    - CHEF_URL='https://foreman.domain.com'
+    - CHEF_ORG='https://foreman.domain.com'
+    - ORG_CLIENT='myclient'
+  volumes:
+    - /path/to/myclient.pem:/usr/src/proxy/chef/org.pem
+  ports:
+    - 8000:8000
+```
+
+#### Build Image
+```yaml
+proxy:
+  build: .
   command: proxy_start
   environment:
     - FOREMAN_URL='https://foreman.domain.com'
@@ -68,8 +84,6 @@ Projects by Hearst Automation Team that use this Image
 
 *   [The Foreman Cloudformation](https://github.com/HearstAT/cfn_foreman) **In Progress**
 *   [The Foreman Docker Dev](https://github.com/HearstAT/docker_foreman_dev) **In Progress**
-
-## Development
 
 ## Contributing
 ### External Contributors
