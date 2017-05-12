@@ -29,3 +29,5 @@ RUN apk update && apk add \
 
 COPY supervisord.conf /usr/src/proxy/supervisord.conf
 COPY proxy_start.sh /usr/local/bin/proxy_start
+
+CMD ["supervisord", "-c", "/usr/src/proxy/supervisord.conf", "-n"]

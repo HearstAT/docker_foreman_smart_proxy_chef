@@ -24,24 +24,28 @@ This container requires a few items to run appropriately
 
 #### Pivotal (For testing only)
 **Note**: Example shows pivotal, if no ORG_CLIENT passed the client name defaults to pivotal
+**Note**: Don't change the org.pem, this is the key name set in the settings.yml.
 ```bash
 docker run \
-  -e FOREMAN_URL='https://foreman.domain.com' \
-  -e CHEF_URL='https://chef.domain.com' \
-  -e CHEF_ORG='myorg' \
-  -v /path/to/pivotal.pem:/usr/src/proxy/chef/org.pem
+  -e FOREMAN_URL='https://foreman.change_domain.com' \
+  -e CHEF_URL='https://chef.change_domain.com' \
+  -e CHEF_ORG='change_myorg' \
+  -p 8000:8000 \
+  -v /path/to/pivotal.pem:/usr/src/proxy/chef/org.pem \
   -d hearstat/chef-smart-proxy
 ```
 
 #### Org Client (Recommended)
 To set to a specific client and a non-pivotal setups
+**Note**: Don't change the org.pem, this is the key name set in the settings.yml.
 ```bash
 docker run \
-  -e FOREMAN_URL='https://foreman.domain.com' \
-  -e CHEF_URL='https://chef.domain.com' \
-  -e CHEF_ORG='myorg' \
-  -e ORG_CLIENT='myclient'
-  -v /path/to/myclient.pem:/usr/src/proxy/chef/org.pem
+  -e FOREMAN_URL='https://foreman.change_domain.com' \
+  -e CHEF_URL='https://chef.change_domain.com' \
+  -e CHEF_ORG='change_myorg' \
+  -e ORG_CLIENT='change_myclient' \
+  -p 8000:8000 \
+  -v /path/to/change_myclient.pem:/usr/src/proxy/chef/org.pem \
   -d hearstat/chef-smart-proxy
 ```
 
