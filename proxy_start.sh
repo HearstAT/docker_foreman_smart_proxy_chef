@@ -11,19 +11,23 @@ cat > '/usr/src/proxy/config/settings.yml' << EOF
 :log_file: logs/proxy.log
 EOF
 
+if [ -n ${ORG_CLIENT} ]; then
+CLIENT="${ORG_CLIENT}"
+else
+CLIENT='pivotal'
+fi
+
 cat > '/usr/src/proxy/config/settings.d/chef.yml' << EOF
 ---
 :enabled: true
 :chef_authenticate_nodes: true
 :chef_server_url: ${CHEF_URL}/organizations/${CHEF_ORG}
+
 # smart-proxy client node needs to have some admin right on chef-server
 # in order to retrive all nodes public keys
 # e.g. 'host.example.net'
-if [ -n ${ORG_CLIENT} ]; then
-:chef_smartproxy_clientname: ${ORG_CLIENT}
-else
-:chef_smartproxy_clientname: pivotal
-fi
+:chef_smartproxy_clientname: ${CLIENT}
+
 # e.g. /etc/chef/client.pem
 :chef_smartproxy_privatekey: /usr/src/proxy/chef/org.pem
 

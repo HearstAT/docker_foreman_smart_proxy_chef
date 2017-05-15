@@ -22,7 +22,7 @@ RUN apk update && apk add \
     git clone https://github.com/theforeman/smart-proxy.git /usr/src/proxy &&\
     mkdir -p /usr/src/proxy/logs &&\
     bundle --without bmc:krb5:libvirt:puppet_proxy_legacy:test:windows &&\
-    gem install smart_proxy_chef &&\
+    gem install smart_proxy_chef -i /usr/src/proxy &&\
     apk del .ruby-builddeps &&\
     rm -rf /var/cache/apk/* &&\
     rm -rf /tmp/*
