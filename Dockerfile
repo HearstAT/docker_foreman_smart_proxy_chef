@@ -29,7 +29,9 @@ RUN apk update && apk add \
     mkdir -p /usr/src/proxy/logs &&\
     ln -s /usr/src/proxy/config/settings.d/ /usr/src/proxy/settings.d &&\
     curl -LJO https://github.com/theforeman/smart_proxy_chef/archive/master.zip &&\
-    unzip smart_proxy_chef-master.zip 'smart_proxy_chef-master/lib/*' -d ./lib/ &&\
+    unzip smart_proxy_chef-master.zip 'smart_proxy_chef-master/lib/*' -d /tmp &&\
+    mv /tmp/smart_proxy_chef-master/lib/ ./lib/ &&\
+    rm -f smart_proxy_chef-master.zip &&\
     bundle --without bmc:krb5:libvirt:puppet_proxy_legacy:test:windows &&\
     apk del .ruby-builddeps &&\
     rm -rf /var/cache/apk/* &&\
