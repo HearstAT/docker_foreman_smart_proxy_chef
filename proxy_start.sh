@@ -3,6 +3,7 @@
 cat > '/usr/src/proxy/config/settings.yml' << EOF
 ---
 :foreman_url: ${FOREMAN_URL}
+:settings_directory: /usr/src/proxy/config/settings.d
 # host to bind ports to (possible values: *, localhost, 0.0.0.0)
 :bind_host: '0.0.0.0'
 # http is disabled by default. To enable, uncomment 'http_port' setting
