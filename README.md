@@ -88,6 +88,7 @@ Projects by Hearst Automation Team that use this Image
 
 *   [The Foreman Cloudformation](https://github.com/HearstAT/cfn_foreman) **In Progress**
 *   [The Foreman Docker Dev](https://github.com/HearstAT/docker_foreman_dev) **In Progress**
+*   Docker Swarm **Coming Soon**
 
 ## Contributing
 ### External Contributors

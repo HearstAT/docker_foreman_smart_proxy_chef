@@ -1,0 +1,290 @@
+
+
+
+Resources:
+
+###############################################################################
+# Autoscaling
+###############################################################################
+
+  ManagerAutoScaleGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+      - ProxyInstance
+    Properties:
+      AvailabilityZones:
+        - !Select [ 0, !GetAZs "" ]
+        - !Select [ 1, !GetAZs "" ]
+        - !Select [ 2, !GetAZs "" ]
+      VPCZoneIdentifier:
+        - !Select [ 0, !Ref Subnets ]
+        - !Select [ 1, !Ref Subnets ]
+        - !Select [ 2, !Ref Subnets ]
+      LaunchConfigurationName: !Ref ServerLaunchConfig
+      TargetGroupARNs:
+        - !Ref ChefTargetGroup
+      LoadBalancerNames:
+      - !Ref LoadBalancer
+      MaxSize: '1'
+      MinSize: '1'
+      Tags:
+      - Key: Name
+        Value: !Sub bootstrap-frontend-${AWS::StackName}
+        PropagateAtLaunch: true
+
+  FrontendAutoScaleGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+      - ManagerAutoScaleGroup
+      - ManagerWaitCondition
+    Properties:
+      AvailabilityZones:
+        - !Select [ 0, !GetAZs "" ]
+        - !Select [ 1, !GetAZs "" ]
+        - !Select [ 2, !GetAZs "" ]
+      VPCZoneIdentifier:
+        - !Select [ 0, !Ref Subnets ]
+        - !Select [ 1, !Ref Subnets ]
+        - !Select [ 2, !Ref Subnets ]
+      LaunchConfigurationName: !Ref ServerLaunchConfig
+      TargetGroupARNs:
+        - !Ref ChefTargetGroup
+      LoadBalancerNames:
+        - !Ref PrimaryElasticLoadBalancer
+      MaxSize: !Ref ChefInstanceMaxCount
+      MinSize: !Ref ChefInstanceMinCount
+      Tags:
+        - Key: Name
+          Value: !Sub frontend-${AWS::StackName}
+          PropagateAtLaunch: true
+
+  FrontendAutoScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref FrontendAutoScaleGroup
+      Cooldown: 60
+      ScalingAdjustment: 1
+
+  FrontendAutoScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref FrontendAutoScaleGroup
+      Cooldown: 60
+      ScalingAdjustment: -1
+
+
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName : CPUAlarmHigh
+      AlarmDescription : Scale up when CPU > 60% for 10 minutes
+      AlarmActions : [!Ref FrontendAutoScaleUpPolicy]
+      MetricName : CPUUtilization
+      Namespace : AWS/EC2
+      ComparisonOperator : GreaterThanOrEqualToThreshold
+      EvaluationPeriods : 2
+      Period : 300
+      Statistic : Average
+      Threshold : 60
+      Dimensions:
+        -
+          Name: AutoScalingGroupName
+          Value: !Ref FrontendAutoScaleGroup
+
+  CPUAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName : CPUAlarmLow
+      AlarmDescription : Scale down when CPU < 50% for 10 minutes
+      AlarmActions : [!Ref FrontendAutoScaleDownPolicy]
+      MetricName : CPUUtilization
+      Namespace : AWS/EC2
+      ComparisonOperator : GreaterThanOrEqualToThreshold
+      EvaluationPeriods : 2
+      Period : 300
+      Statistic : Average
+      Threshold : 50
+      Dimensions:
+        -
+          Name: AutoScalingGroupName
+          Value: !Ref FrontendAutoScaleGroup
+
+###############################################################################
+# Instance Launch Configuration
+###############################################################################
+
+  ServerLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !Ref ImageID
+      AssociatePublicIpAddress: true
+      EbsOptimized: true
+      InstanceType: !Ref ChefInstanceType
+      SecurityGroups:
+        - !Ref FrontendSecurityGroup
+        - !Ref SSHSecurityGroup
+      KeyName: !Ref KeyName
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp2
+            DeleteOnTermination: true
+      IamInstanceProfile: !Ref ChefInstanceProfile
+      UserData:
+        "Fn::Base64":
+          "Fn::Sub": |
+            #!/bin/bash -xev
+
+            ##########################################################
+            # Upgrade OS & Install Dependencies
+            ##########################################################
+
+            apt-get update && apt-get -y upgrade
+            apt-get install -y wget curl python-setuptools python-pip git
+
+            ##########################################################
+            # Install AWS & CFN Tools
+            ##########################################################
+
+            if [ -z $(command -v cfn-signal) ]; then
+                easy_install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+            fi
+
+            if [ -z $(command -v aws) ]; then
+              sleep 5
+              pip install awscli
+            fi
+
+            ##########################################################
+            # Global Variable Set & Helper Set
+            ##########################################################
+
+            export DEBIAN_FRONTEND=noninteractive
+            export INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+            export BOOTSTRAP_TAGS=$(aws ec2 describe-tags --region ${AWS::Region} --filter "Name=resource-id,Values=$INSTANCE_ID" --output=text | grep ManagerAutoScaleGroup)
+            export STACKNAME='${AWS::StackName}'
+
+            if [ -n "${!BOOTSTRAP_TAGS}" ]; then
+              export HOSTNAME="docker-manager-${!INSTANCE_ID}.${HostedZone}"
+            else
+              export HOSTNAME="docker-worker-${!INSTANCE_ID}.${HostedZone}"
+            fi
+
+            if [ -n "${!BOOTSTRAP_TAGS}" ]; then
+              export WAITHANDLE='${ManagerWaitHandle}'
+            else
+              export WAITHANDLE='${FrontendWaitHandle}'
+            fi
+
+            error_exit()
+            {
+              cfn-signal -e 1 -r "$1" "${!WAITHANDLE}"
+              exit 1
+            }
+
+            export -f error_exit
+
+            ##########################################################
+            # Set Hostname and Hosts File
+            ##########################################################
+
+            hostname ${!HOSTNAME} || error_exit 'Failed to set hostname'
+            echo "${!HOSTNAME}" > /etc/hostname || error_exit 'Failed to set hostname file'
+
+            cat > '/etc/hosts' << EOF
+            127.0.0.1 ${!HOSTNAME} ${!HOSTNAME%%.*} localhost
+            ::1 localhost6.localdomain6 localhost6
+            EOF
+
+            ##########################################################
+            # If not Manager, Join as Worker
+            ##########################################################
+
+            if [ -z "${!BOOTSTRAP_TAGS}" ]; then
+              apt-key adv --keyserver hkp://p80.pool.sks-keyservers.net:80 --recv-keys 58118E89F3A912897C070ADBF76221572C52609D
+              mkdir -p /etc/apt/sources.list.d
+              echo deb https://apt.dockerproject.org/repo ubuntu-xenial main > /etc/apt/sources.list.d/docker.list
+
+              printf 'net.ipv4.neigh.default.gc_thresh1 = 30000\nnet.ipv4.neigh.default.gc_thresh2 = 32000\nnet.ipv4.neigh.default.gc_thresh3 = 32768' >> /etc/sysctl.conf
+              sysctl -p
+
+              service lxcfs stop
+              apt-get remove -y -q lxc-common lxcfs lxd lxd-client
+
+              apt-get install -y -q linux-image-extra-$(uname -r) linux-image-extra-virtual
+
+              apt-get install -y -q docker-engine
+
+              systemctl start docker.service
+
+              mkdir -p /etc/systemd/system/docker.service.d
+              printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd -H fd:// --label=owner=alexellisio --storage-driver aufs' > /etc/systemd/system/docker.service.d/options.conf
+              systemctl daemon-reload
+              systemctl restart docker.service
+
+              usermod ubuntu -aG docker
+
+              docker swarm init \
+                  --listen-addr=eth0
+                  --advertise-addr $(curl http://169.254.169.254/latest/meta-data/public-ipv4) >> /home/ubuntu/swarm.key
+            fi
+
+            ##########################################################
+            # Existing Install Options
+            ##########################################################
+
+            if [ -n "${!BOOTSTRAP_TAGS}" ]; then
+              echo "Backup Restore Selected, restoring previos knife ec backup"
+              aws s3 sync s3://${BucketName}/chef_ec_backups /tmp/backup_sync || error_exit "Failed to sync backup files from S3"
+              tar -xzf /tmp/backup_sync/${BackupFilename} --strip-components=1 || error_exit "Failed to extract backup"
+              /opt/opscode/embedded/bin/knife ec restore /tmp/backup -s https://${ChefSubdomain}.${HostedZone} --with-user-sql --skip-useracl --sql-host ${DBENDPOINT} || error_exit "Failed to restore Backup"
+            fi
+
+            ##########################################################
+            # NewRelic Config if Enabled
+            ##########################################################
+
+            if [ -n "${NewRelicAppName}" ]; then
+
+            fi
+
+            ##########################################################
+            # Sumologic Config if Enabled
+            ##########################################################
+
+            if [ -n "${SumologicAccessID}" ]; then
+
+            fi
+
+            ##########################################################
+            # Send Success Signal to CFN Wait Handle
+            ##########################################################
+
+            /usr/local/bin/cfn-signal -e 0 -r 'Server setup complete' "${!WAITHANDLE}"
+
+            ##########################################################
+            # Reboot After Success for all updates made
+            ##########################################################
+
+            reboot
+
+  ManagerWaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+  ManagerWaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: ServerLaunchConfig
+    Properties:
+      Handle: !Ref ManagerWaitHandle
+      Timeout: 2300
+
+  FrontendWaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+  FrontendWaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: ManagerWaitCondition
+    Properties:
+      Handle: !Ref FrontendWaitHandle
+      Timeout: 2300
