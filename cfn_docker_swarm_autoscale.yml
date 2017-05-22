@@ -35,9 +35,9 @@ Parameters:
     Type: String
     Default: chef-test
     AllowedValues:
-      - swarm-a
-      - swarm-b
-      - swarm-test
+      - swarm-proxy-a
+      - swarm-proxy-b
+      - swarm-proxy-test
     Description: subdomain/prefix that is combined with the hosted zone entered
 
   AdditionalMangers:
@@ -373,22 +373,22 @@ Resources:
             - Type: forward
               TargetGroupArn: !Ref SwarmTargetGroup
 
-  ProxyListenerRule:
+  SwarmListenerRule:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule
     Properties:
       Actions:
       - Type: forward
         TargetGroupArn:
-          Ref: ProxyTargetGroup
+          Ref: SwarmTargetGroup
       Conditions:
       - Field: host-header
         Values:
-        - Sub: "{LeaderSubdomain}-proxy.${HostedZone}"
+        - Sub: "{LeaderSubdomain}.${HostedZone}"
       ListenerArn:
         Ref: SwarmALBListener
       Priority: 1
 
-  SwarmListenerRule:
+  SwarmGBListenerRule:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule
     Properties:
       Actions:
@@ -403,15 +403,16 @@ Resources:
         Ref: SwarmALBListener
       Priority: 2
 
+
   SwarmTargetGroup:
       Type: "AWS::ElasticLoadBalancingV2::TargetGroup"
       Properties:
           Name: !Sub "${LeaderSubdomain}-TargetGroup"
           HealthCheckIntervalSeconds: 60
           UnhealthyThresholdCount: 10
-          HealthCheckPath: /_status
+          HealthCheckPath: /
           VpcId: !Ref VPC
-          Port: 80
+          Port: 9000
           Protocol: HTTP
 
 ###############################################################################
@@ -685,9 +686,11 @@ Resources:
               docker service create --name portainer --publish 9000:9000 --constraint 'node.role == manager' --mount type=bind,src=//var/run/docker.sock,dst=/var/run/docker.sock portainer/portainer -H unix:///var/run/docker.sock
 
               PROXY_PORT='49152'
+              PRIORITY='3'
 
               for org in '${ChefOrgs}'; do
-                docker service create --name ${!org}-foreman-proxy \
+
+                docker service create --name ${!org}-foreman-chef-proxy \
                   --publish ${!PROXY_PORT}:8000 \
                   -e FOREMAN_URL='${ForemanUrl}' \
                   -e CHEF_URL='${CHEF_URL}' \
@@ -696,7 +699,11 @@ Resources:
                   ## Needs to be org specific pems! Be careful with pivotal pem usage
                   --mount type=bind,source=/opt/chef/pivotal.pem,destination=/usr/src/proxy/chef/org.pem \
                   hearstat/chef-smart-proxy
+
+                aws elbv2 create-target-group --name ${!org}-foreman-chef-proxy --protocol HTTP --port ${!PROXY_PORT} --vpc-id ${VPC}
+                aws elbv2 create-rule --listener-arn ${SwarmALBListener} --priority ${!PRIORITY} --conditions Field=path-pattern,Values="/${!org}" --actions Type=forward,TargetGroupArn=${!org_group}
                 (( PROXY_PORT++ ))
+                (( PRIORITY++ ))
               done
             fi
 
