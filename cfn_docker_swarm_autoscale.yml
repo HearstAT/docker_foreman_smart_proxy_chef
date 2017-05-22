@@ -1,86 +1,542 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Docker Swarm - Foreman Chef Smart Proxy - Ubuntu Xenial Based (20161214 AMI Build)
 
+Parameters:
+  ## Domain Configuration
+  HostedZone:
+    Type: String
+    Default: domain.com
+    Description: must match a route53 hosted domain/zone
+
+  SSLCertificateARN:
+    Type: String
+    Default: ''
+    Description: SSL Certficate ARN for SSL Certficate
+
+  ## Chef Configuration
+  ChefOrgs:
+    Type: String
+    Default: default
+    Description: List of Chef Orgs to Create Smart Proxies for, separate by spaces only
+
+  ChefURL:
+    Type: String
+    Default: https://chef.test.com
+    Description: Enter Chef URL to Connect to
+
+  ForemanURL:
+    Type: String
+    Default: https://foreman.test.com
+    Description: Enter Foreman URL to Connect to
+
+  ## Swarm Configuration
+  LeaderSubdomain:
+    Type: String
+    Default: chef-test
+    AllowedValues:
+      - swarm-a
+      - swarm-b
+      - swarm-test
+    Description: subdomain/prefix that is combined with the hosted zone entered
+
+  AdditionalMangers:
+    Type: String
+    Default: False
+    AllowedValues:
+      - True
+      - False
+    Description: Select true to set Swarm Managers to a total of 3
+
+  ## Elasticsearch Configuration
+  InstanceType:
+    Type: String
+    Default: t2.small
+    AllowedValues:
+      - t2.micro
+      - t2.small
+      - t2.medium
+      - t2.large
+      - t2.xlarge
+      - t2.2xlarge
+      - m3.medium
+      - m3.large
+    ConstraintDescription: must be a valid EC2 instance type.
+    Description: Instance Type for Leader, Manager, and Worker
+
+  ManagerInstanceCount:
+    Type: String
+    Default: '0'
+    Description: Enter the number of ElasticSearch Instances/Nodes you wanted
+
+  ## New Relic Configuration
+  NewRelicAppName:
+    Type: String
+    Default: ''
+    Description: (Optional) Enter New Relic Application Name; e.g.; chef_ha_stack
+
+  NewRelicLicense:
+    Type: String
+    NoEcho: 'true'
+    Default: ''
+    Description: (Optional) Enter New Relic License Key
+
+  ## Sumologic Configuration
+  SumologicAccessID:
+    Type: String
+    NoEcho: 'true'
+    Default: ''
+    Description: (Optional) Enter Sumologic Access ID
+
+  SumologicAccessKey:
+    Type: String
+    NoEcho: 'true'
+    Default: ''
+    Description: (Optional) Enter Sumologic Access Key
+
+  ## Instance/Network Configuration
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: AWS::EC2::KeyPair::KeyName
+
+  SSHSecurityGroup:
+    Description: Select Security Group for SSH Access
+    Type: AWS::EC2::SecurityGroup::Id
+    Default: ''
+
+  VPC:
+    Description: Choose VPC to use
+    Type: AWS::EC2::VPC::Id
+    Default: ''
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    -
+      Label:
+        default: Domain Configuration
+      Parameters:
+        - HostedZone
+        - SSLCertificateARN
+    -
+      Label:
+        default: New Relic Configuration (Optional - Leave Blank to Disable)
+      Parameters:
+        - NewRelicAppName
+        - NewRelicLicense
+    -
+      Label:
+        default: Sumologic Configuration (Optional  - Leave Blank to Disable)
+      Parameters:
+        - SumologicAccessID
+        - SumologicAccessKey
+    -
+      Label:
+        default: Instance & Network Configuration
+      Parameters:
+        - KeyName
+        - VPC
+        - SSHSecurityGroup
+
+Conditions:
+  # Sets hardcoded options based on which domain is being created
+  # Avoids issues when doing blue/green deployment
+  LeaderSubdomainCon:
+    !Equals [ !Ref AdditionalMangers, 'True' ]
+  # Will create bucket for chef if no bucket entered for secrets
+  LeaderBucketCon:
+    !Equals [ !Ref ExistingLeaderBucket, '' ]
+  # Will create database if no exisitng URL is provided
+  DBCon:
+    !Equals [ !Ref DBURL, '' ]
+
+Mappings:
+  RegionMap:
+    us-west-2:
+      HVM64: ami-b7a114d7
+    eu-west-1:
+      HVM64: ami-6f587e1c
 
 
 Resources:
 
 ###############################################################################
+# Subnets
+###############################################################################
+
+  SubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      # Get Availability Zones and select First in string
+      AvailabilityZone: !Select [ 0, !GetAZs "" ]
+      # Selects subnet range based on Subdomain, avoids blue/green deployment failures
+      CidrBlock: !If [ LeaderSubdomainCon, 172.33.10.0/24, 172.33.11.0/24 ]
+      Tags:
+        - Key: Name
+          Value: Public-Subnet-A
+        - Key: Application
+          Value: !Ref AWS::StackId
+        - Key: Network
+          Value: "Public"
+
+  SubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      # Get Availability Zones and select Second in string
+      AvailabilityZone: !Select [ 1, !GetAZs "" ]
+      # Selects subnet range based on Subdomain, avoids blue/green deployment failures
+      CidrBlock: !If [ LeaderSubdomainCon, 172.33.20.0/24, 172.33.21.0/24 ]
+      Tags:
+        - Key: Name
+          Value: Public-Subnet-B
+        - Key: Application
+          Value: !Ref AWS::StackId
+        - Key: Network
+          Value: "Public"
+
+  SubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      # Get Availability Zones and select Third in string
+      AvailabilityZone: !Select [ 2, !GetAZs "" ]
+      # Selects subnet range based on Subdomain, avoids blue/green deployment failures
+      CidrBlock: !If [ LeaderSubdomainCon, 172.33.30.0/24, 172.33.31.0/24 ]
+      Tags:
+        - Key: Name
+          Value: Public-Subnet-C
+        - Key: Application
+          Value: !Ref AWS::StackId
+        - Key: Network
+          Value: "Public"
+
+###############################################################################
+# S3 Buckets
+###############################################################################
+
+  LeaderBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      AccessControl: Private
+
+###############################################################################
+# Security: IAM, Groups, Instance Profiles
+###############################################################################
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - Ref: SwarmRole
+
+  SwarmRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+
+  RolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${AWS::StackName}-SwarmServer-Policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Allow all actions to one bucket (the supplied one, or the one you provided)
+          - Action: s3:*
+            Effect: Allow
+            Resource:
+              - Sub: "arn:aws:s3:::${LeaderBucket}"
+              - Sub: "arn:aws:s3:::${LeaderBucket}/*"
+          # Allow ability to list all buckets
+          - Action: s3:List*
+            Effect: Allow
+            Resource: arn:aws:s3:::*
+          # Allow instances to read their own tags (needed for setup script below)
+          - Action: ec2:DescribeTags
+            Effect: Allow
+            Resource: "*"
+      Roles:
+        - Ref: SwarmRole
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Setup Ingress/Egress for Swarm Load Balancer
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: '0'
+          ToPort: '65535'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${LeaderSubdomain}-ALB-SecurityGroup
+
+  ServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Setup Ingress/Egress for Swarm Frontend
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '9090'
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '9090'
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          SourceSecurityGroupId: !Ref SSHSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: '0'
+          ToPort: '65535'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${LeaderSubdomain}-Frontend-Security-Group
+
+###############################################################################
+# LoadBalancer and DNS
+###############################################################################
+
+  SwarmDNS:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneName: !Sub "${HostedZone}."
+      Comment: !Sub Zone apex alias targeted to ${LeaderSubdomain} ELB.
+      RecordSets:
+          # Create DNS A Record by joining LeaderSubdomain + HostedZone
+        - Name: !Join [ '', [ !Ref LeaderSubdomain, ".", !Ref HostedZone, "." ] ]
+          Type: A
+          AliasTarget:
+            HostedZoneId: !GetAtt SwarmALB.CanonicalHostedZoneNameID
+            DNSName: !GetAtt SwarmALB.CanonicalHostedZoneName
+
+  SwarmALB:
+    Type: "AWS::ElasticLoadBalancingV2::LoadBalancer"
+    Properties:
+      Name: !Sub ${LeaderSubdomain}-LB
+      SecurityGroups:
+        - Ref: ALBSecurityGroup
+      Subnets:
+        - Ref: SubnetA
+        - Ref: SubnetB
+        - Ref: SubnetC
+      Tags:
+        - Key: Name
+          Value: !Sub "${LeaderSubdomain}-ALB"
+
+  SwarmALBListener:
+    Type: "AWS::ElasticLoadBalancingV2::Listener"
+    Properties:
+        Certificates:
+          - CertificateArn: !Ref SSLCertificateARN
+        LoadBalancerArn: !Ref SwarmALB
+        Port: 443
+        Protocol: HTTPS
+        DefaultActions:
+            - Type: forward
+              TargetGroupArn: !Ref SwarmTargetGroup
+
+  ProxyListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: ProxyTargetGroup
+      Conditions:
+      - Field: host-header
+        Values:
+        - Sub: "{LeaderSubdomain}-proxy.${HostedZone}"
+      ListenerArn:
+        Ref: SwarmALBListener
+      Priority: 1
+
+  SwarmListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: SwarmTargetGroup
+      Conditions:
+      - Field: host-header
+        Values:
+        - Sub: "swarm-proxy.${HostedZone}"
+      ListenerArn:
+        Ref: SwarmALBListener
+      Priority: 2
+
+  SwarmTargetGroup:
+      Type: "AWS::ElasticLoadBalancingV2::TargetGroup"
+      Properties:
+          Name: !Sub "${LeaderSubdomain}-TargetGroup"
+          HealthCheckIntervalSeconds: 60
+          UnhealthyThresholdCount: 10
+          HealthCheckPath: /_status
+          VpcId: !Ref VPC
+          Port: 80
+          Protocol: HTTP
+
+###############################################################################
 # Autoscaling
 ###############################################################################
 
-  ManagerAutoScaleGroup:
+  LeaderAutoScaleGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
-    DependsOn:
-      - ProxyInstance
     Properties:
       AvailabilityZones:
-        - !Select [ 0, !GetAZs "" ]
-        - !Select [ 1, !GetAZs "" ]
-        - !Select [ 2, !GetAZs "" ]
+        - Select: [ 0, !GetAZs "" ]
+        - Select: [ 1, !GetAZs "" ]
+        - Select: [ 2, !GetAZs "" ]
       VPCZoneIdentifier:
-        - !Select [ 0, !Ref Subnets ]
-        - !Select [ 1, !Ref Subnets ]
-        - !Select [ 2, !Ref Subnets ]
+        - Ref: SubnetA
+        - Ref: SubnetB
+        - Ref: SubnetC
       LaunchConfigurationName: !Ref ServerLaunchConfig
       TargetGroupARNs:
-        - !Ref ChefTargetGroup
+        - Ref: WorkerTargetGroup
+        - Ref: ManagerTargetGroup
+        - Ref: LeaderTargetGroup
       LoadBalancerNames:
-      - !Ref LoadBalancer
+      - Ref: LoadBalancer
       MaxSize: '1'
       MinSize: '1'
       Tags:
       - Key: Name
-        Value: !Sub bootstrap-frontend-${AWS::StackName}
+        Value: !Sub swarm-leader-${AWS::StackName}
         PropagateAtLaunch: true
 
-  FrontendAutoScaleGroup:
+  ManagerAutoScaleGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
+    Condition: ManagerCon
     DependsOn:
-      - ManagerAutoScaleGroup
-      - ManagerWaitCondition
+      - LeaderAutoScaleGroup
+      - LeaderWaitCondition
     Properties:
       AvailabilityZones:
-        - !Select [ 0, !GetAZs "" ]
-        - !Select [ 1, !GetAZs "" ]
-        - !Select [ 2, !GetAZs "" ]
+        - Select: [ 0, !GetAZs "" ]
+        - Select: [ 1, !GetAZs "" ]
+        - Select: [ 2, !GetAZs "" ]
       VPCZoneIdentifier:
-        - !Select [ 0, !Ref Subnets ]
-        - !Select [ 1, !Ref Subnets ]
-        - !Select [ 2, !Ref Subnets ]
+        - Ref: SubnetA
+        - Ref: SubnetB
+        - Ref: SubnetC
       LaunchConfigurationName: !Ref ServerLaunchConfig
       TargetGroupARNs:
-        - !Ref ChefTargetGroup
+        - Ref: WorkerTargetGroup
+        - Ref: ManagerTargetGroup
       LoadBalancerNames:
-        - !Ref PrimaryElasticLoadBalancer
-      MaxSize: !Ref ChefInstanceMaxCount
-      MinSize: !Ref ChefInstanceMinCount
+      - Ref: LoadBalancer
+      MaxSize: '2'
+      MinSize: '2'
+      Tags:
+      - Key: Name
+        Value: !Sub swarm-manager-${AWS::StackName}
+        PropagateAtLaunch: true
+
+  WorkerAutoScaleGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+      - LeaderAutoScaleGroup
+      - LeaderWaitCondition
+    Properties:
+      AvailabilityZones:
+        - Select: [ 0, !GetAZs "" ]
+        - Select: [ 1, !GetAZs "" ]
+        - Select: [ 2, !GetAZs "" ]
+      VPCZoneIdentifier:
+        - Ref: SubnetA
+        - Ref: SubnetB
+        - Ref: SubnetC
+      LaunchConfigurationName: !Ref ServerLaunchConfig
+      TargetGroupARNs:
+        - Ref: WorkerTargetGroup
+      LoadBalancerNames:
+        - Ref: DockerALB
+      MaxSize: '1'
+      MinSize: '3'
       Tags:
         - Key: Name
-          Value: !Sub frontend-${AWS::StackName}
+          Value: !Sub swarm-worker-${AWS::StackName}
           PropagateAtLaunch: true
 
-  FrontendAutoScaleUpPolicy:
+  WorkerAutoScaleUpPolicy:
     Type: AWS::AutoScaling::ScalingPolicy
     Properties:
       AdjustmentType: ChangeInCapacity
-      AutoScalingGroupName: !Ref FrontendAutoScaleGroup
+      AutoScalingGroupName: !Ref WorkerAutoScaleGroup
       Cooldown: 60
       ScalingAdjustment: 1
 
-  FrontendAutoScaleDownPolicy:
+  WorkerAutoScaleDownPolicy:
     Type: AWS::AutoScaling::ScalingPolicy
     Properties:
       AdjustmentType: ChangeInCapacity
-      AutoScalingGroupName: !Ref FrontendAutoScaleGroup
+      AutoScalingGroupName: !Ref WorkerAutoScaleGroup
       Cooldown: 60
       ScalingAdjustment: -1
 
-
-  CPUAlarmHigh:
+  WorkerCPUAlarmHigh:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName : CPUAlarmHigh
-      AlarmDescription : Scale up when CPU > 60% for 10 minutes
-      AlarmActions : [!Ref FrontendAutoScaleUpPolicy]
+      AlarmDescription : Scale up when CPU > 70% for 10 minutes
+      AlarmActions : [!Ref WorkerAutoScaleUpPolicy]
+      MetricName : CPUUtilization
+      Namespace : AWS/EC2
+      ComparisonOperator : GreaterThanOrEqualToThreshold
+      EvaluationPeriods : 2
+      Period : 300
+      Statistic : Average
+      Threshold : 70
+      Dimensions:
+        -
+          Name: AutoScalingGroupName
+          Value: !Ref WorkerAutoScaleGroup
+
+  WorkerCPUAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName : CPUAlarmLow
+      AlarmDescription : Scale down when CPU < 60% for 10 minutes
+      AlarmActions : [!Ref WorkerAutoScaleDownPolicy]
       MetricName : CPUUtilization
       Namespace : AWS/EC2
       ComparisonOperator : GreaterThanOrEqualToThreshold
@@ -91,25 +547,7 @@ Resources:
       Dimensions:
         -
           Name: AutoScalingGroupName
-          Value: !Ref FrontendAutoScaleGroup
-
-  CPUAlarmLow:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName : CPUAlarmLow
-      AlarmDescription : Scale down when CPU < 50% for 10 minutes
-      AlarmActions : [!Ref FrontendAutoScaleDownPolicy]
-      MetricName : CPUUtilization
-      Namespace : AWS/EC2
-      ComparisonOperator : GreaterThanOrEqualToThreshold
-      EvaluationPeriods : 2
-      Period : 300
-      Statistic : Average
-      Threshold : 50
-      Dimensions:
-        -
-          Name: AutoScalingGroupName
-          Value: !Ref FrontendAutoScaleGroup
+          Value: !Ref WorkerAutoScaleGroup
 
 ###############################################################################
 # Instance Launch Configuration
@@ -121,10 +559,10 @@ Resources:
       ImageId: !Ref ImageID
       AssociatePublicIpAddress: true
       EbsOptimized: true
-      InstanceType: !Ref ChefInstanceType
+      InstanceType: !Ref InstanceType
       SecurityGroups:
-        - !Ref FrontendSecurityGroup
-        - !Ref SSHSecurityGroup
+        - Ref: WorkerSecurityGroup
+        - Ref: SSHSecurityGroup
       KeyName: !Ref KeyName
       BlockDeviceMappings:
         - DeviceName: /dev/sda1
@@ -132,7 +570,7 @@ Resources:
             VolumeSize: 20
             VolumeType: gp2
             DeleteOnTermination: true
-      IamInstanceProfile: !Ref ChefInstanceProfile
+      IamInstanceProfile: !Ref InstanceProfile
       UserData:
         "Fn::Base64":
           "Fn::Sub": |
@@ -164,19 +602,24 @@ Resources:
 
             export DEBIAN_FRONTEND=noninteractive
             export INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
-            export BOOTSTRAP_TAGS=$(aws ec2 describe-tags --region ${AWS::Region} --filter "Name=resource-id,Values=$INSTANCE_ID" --output=text | grep ManagerAutoScaleGroup)
+            export LEADER_TAGS=$(aws ec2 describe-tags --region ${AWS::Region} --filter "Name=resource-id,Values=$INSTANCE_ID" --output=text | grep LeaderAutoScaleGroup)
+            export MANAGER_TAGS=$(aws ec2 describe-tags --region ${AWS::Region} --filter "Name=resource-id,Values=$INSTANCE_ID" --output=text | grep ManagerAutoScaleGroup)
             export STACKNAME='${AWS::StackName}'
 
-            if [ -n "${!BOOTSTRAP_TAGS}" ]; then
-              export HOSTNAME="docker-manager-${!INSTANCE_ID}.${HostedZone}"
+            if [ -n "${!LEADER_TAGS}" ]; then
+              export HOSTNAME="swarm-leader-${!INSTANCE_ID}.${HostedZone}"
+            elif [ -n "${!MANAGER_TAGS}" ]; then
+              export HOSTNAME="swarm-manager-${!INSTANCE_ID}.${HostedZone}"
             else
-              export HOSTNAME="docker-worker-${!INSTANCE_ID}.${HostedZone}"
+              export HOSTNAME="swarm-worker-${!INSTANCE_ID}.${HostedZone}"
             fi
 
-            if [ -n "${!BOOTSTRAP_TAGS}" ]; then
+            if [ -n "${!LEADER_TAGS}" ]; then
+              export WAITHANDLE='${LeaderWaitHandle}'
+            elif [ -n "${!MANAGER_TAGS}" ]; then
               export WAITHANDLE='${ManagerWaitHandle}'
             else
-              export WAITHANDLE='${FrontendWaitHandle}'
+              export WAITHANDLE='${WorkerWaitHandle}'
             fi
 
             error_exit()
@@ -200,47 +643,87 @@ Resources:
             EOF
 
             ##########################################################
-            # If not Manager, Join as Worker
+            # Install Docker
             ##########################################################
 
-            if [ -z "${!BOOTSTRAP_TAGS}" ]; then
-              apt-key adv --keyserver hkp://p80.pool.sks-keyservers.net:80 --recv-keys 58118E89F3A912897C070ADBF76221572C52609D
-              mkdir -p /etc/apt/sources.list.d
-              echo deb https://apt.dockerproject.org/repo ubuntu-xenial main > /etc/apt/sources.list.d/docker.list
+            apt-key adv --keyserver hkp://p80.pool.sks-keyservers.net:80 --recv-keys 58118E89F3A912897C070ADBF76221572C52609D
+            mkdir -p /etc/apt/sources.list.d
+            echo deb https://apt.dockerproject.org/repo ubuntu-xenial main > /etc/apt/sources.list.d/docker.list
 
-              printf 'net.ipv4.neigh.default.gc_thresh1 = 30000\nnet.ipv4.neigh.default.gc_thresh2 = 32000\nnet.ipv4.neigh.default.gc_thresh3 = 32768' >> /etc/sysctl.conf
-              sysctl -p
+            printf 'net.ipv4.neigh.default.gc_thresh1 = 30000\nnet.ipv4.neigh.default.gc_thresh2 = 32000\nnet.ipv4.neigh.default.gc_thresh3 = 32768' >> /etc/sysctl.conf
+            sysctl -p
 
-              service lxcfs stop
-              apt-get remove -y -q lxc-common lxcfs lxd lxd-client
+            service lxcfs stop
+            apt-get remove -y -q lxc-common lxcfs lxd lxd-client
 
-              apt-get install -y -q linux-image-extra-$(uname -r) linux-image-extra-virtual
+            apt-get install -y -q linux-image-extra-$(uname -r) linux-image-extra-virtual
 
-              apt-get install -y -q docker-engine
+            apt-get install -y -q docker-engine
 
-              systemctl start docker.service
+            systemctl start docker.service
 
-              mkdir -p /etc/systemd/system/docker.service.d
-              printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd -H fd:// --label=owner=alexellisio --storage-driver aufs' > /etc/systemd/system/docker.service.d/options.conf
-              systemctl daemon-reload
-              systemctl restart docker.service
+            mkdir -p /etc/systemd/system/docker.service.d
+            printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd -H fd:// --storage-driver aufs' > /etc/systemd/system/docker.service.d/options.conf
+            systemctl daemon-reload
+            systemctl restart docker.service
 
-              usermod ubuntu -aG docker
+            usermod ubuntu -aG docker
 
-              docker swarm init \
-                  --listen-addr=eth0
-                  --advertise-addr $(curl http://169.254.169.254/latest/meta-data/public-ipv4) >> /home/ubuntu/swarm.key
+            ##########################################################
+            # Leader Init
+            ##########################################################
+
+            if [ -n "${!LEADER_TAGS}" ]; then
+              docker swarm init
+              docker swarm join-token -q manager >> /tmp/manager.token
+              docker swarm join-token -q worker >> /tmp/worker.token
+              curl http://169.254.169.254/latest/meta-data/local-ipv4 >> /tmp/leader_ip.txt
+              aws s3 cp /tmp/leader_ip.txt s3://${LeaderBucket}/leader_data/leader_ip.txt || error_exit "[ERROR] - Failed to Copy Leader IP to S3"
+              aws s3 cp /tmp/manager.token s3://${LeaderBucket}/leader_data/manager.token || error_exit "[ERROR] - Failed to Copy Leader Manager Token to S3"
+              aws s3 cp /tmp/worker.token s3://${LeaderBucket}/leader_data/worker.token || error_exit "[ERROR] - Failed to Copy Leader Worker Token to S3"
+              ## Much more
+              docker service create --name portainer --publish 9000:9000 --constraint 'node.role == manager' --mount type=bind,src=//var/run/docker.sock,dst=/var/run/docker.sock portainer/portainer -H unix:///var/run/docker.sock
+
+              PROXY_PORT='49152'
+
+              for org in '${ChefOrgs}'; do
+                docker service create --name ${!org}-foreman-proxy \
+                  --publish ${!PROXY_PORT}:8000 \
+                  -e FOREMAN_URL='${ForemanUrl}' \
+                  -e CHEF_URL='${CHEF_URL}' \
+                  -e CHEF_ORG=${!org} \
+                  -e ORG_CLIENT='pivotal' \
+                  ## Needs to be org specific pems! Be careful with pivotal pem usage
+                  --mount type=bind,source=/opt/chef/pivotal.pem,destination=/usr/src/proxy/chef/org.pem \
+                  hearstat/chef-smart-proxy
+                (( PROXY_PORT++ ))
+              done
             fi
 
             ##########################################################
-            # Existing Install Options
+            # If not Leader, Copy Leader Data
             ##########################################################
 
-            if [ -n "${!BOOTSTRAP_TAGS}" ]; then
-              echo "Backup Restore Selected, restoring previos knife ec backup"
-              aws s3 sync s3://${BucketName}/chef_ec_backups /tmp/backup_sync || error_exit "Failed to sync backup files from S3"
-              tar -xzf /tmp/backup_sync/${BackupFilename} --strip-components=1 || error_exit "Failed to extract backup"
-              /opt/opscode/embedded/bin/knife ec restore /tmp/backup -s https://${ChefSubdomain}.${HostedZone} --with-user-sql --skip-useracl --sql-host ${DBENDPOINT} || error_exit "Failed to restore Backup"
+            if [ -z "${!LEADER_TAGS}" ]; then
+              aws s3 cp s3://${LeaderBucket}/leader_data/leader_ip.txt /tmp/leader_ip.txt || error_exit "[ERROR] - Failed to Copy Leader IP"
+              aws s3 cp s3://${LeaderBucket}/leader_data/manager.token /tmp/manager.token || error_exit "[ERROR] - Failed to Copy Leader Manager Token"
+              aws s3 cp s3://${LeaderBucket}/leader_data/worker.token /tmp/worker.token || error_exit "[ERROR] - Failed to Copy Leader Worker Token"
+            fi
+
+            ##########################################################
+            # If Manager, Join as Manager
+            ##########################################################
+
+            if [ -n "${!MANAGER_TAGS}" ]; then
+              docker swarm join --token $(cat /tmp/manager.token) $(cat /tmp/leader_ip.txt):2377
+            fi
+
+            ##########################################################
+            # If not Manager, Join as Worker
+            ##########################################################
+
+            if [ -z "${!LEADER_TAGS}" ] && [ -z "${!MANAGER_TAGS}" ]; then
+              docker swarm join --token $(cat /tmp/worker.token) $(cat /tmp/leader_ip.txt):2377
             fi
 
             ##########################################################
@@ -265,26 +748,47 @@ Resources:
 
             /usr/local/bin/cfn-signal -e 0 -r 'Server setup complete' "${!WAITHANDLE}"
 
-            ##########################################################
-            # Reboot After Success for all updates made
-            ##########################################################
+  ##########################################################
+  # Wait Handles
+  ##########################################################
 
-            reboot
+  LeaderWaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+  LeaderWaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: ServerLaunchConfig
+    Properties:
+      Handle: !Ref LeaderWaitHandle
+      Timeout: 2300
 
   ManagerWaitHandle:
     Type: AWS::CloudFormation::WaitConditionHandle
   ManagerWaitCondition:
     Type: AWS::CloudFormation::WaitCondition
-    DependsOn: ServerLaunchConfig
+    DependsOn: LeaderWaitCondition
     Properties:
       Handle: !Ref ManagerWaitHandle
       Timeout: 2300
 
-  FrontendWaitHandle:
+  WorkerWaitHandle:
     Type: AWS::CloudFormation::WaitConditionHandle
-  FrontendWaitCondition:
+
+  ##########################################################
+  ## Wait on Manager if Additional Managers are Selected
+  ##########################################################
+  WorkerWaitCondition:
     Type: AWS::CloudFormation::WaitCondition
     DependsOn: ManagerWaitCondition
     Properties:
-      Handle: !Ref FrontendWaitHandle
+      Handle: !Ref WorkerWaitHandle
+      Timeout: 2300
+
+  ##########################################################
+  ## Wait on Leader if no Additional Manager Selected
+  ##########################################################
+  WorkerWaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: ManagerWaitCondition
+    Properties:
+      Handle: !Ref WorkerWaitHandle
       Timeout: 2300

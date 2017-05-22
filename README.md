@@ -83,12 +83,31 @@ proxy:
     - 8000:8000
 ```
 
+### Docker Swarm
+
+#### Service Creates
+
+```bash
+docker service create --name org-foreman-proxy \
+  --publish 8000:8000 \
+  -e FOREMAN_URL='https://foreman.change_domain.com' \
+  -e CHEF_URL='https://chef.change_domain.com' \
+  -e CHEF_ORG='change_myorg' \
+  -e ORG_CLIENT='change_myclient' \
+  --mount type=bind,source=/path/to/myclient.pem,destination=/usr/src/proxy/chef/org.pem \
+  hearstat/chef-smart-proxy
+```
+
+#### Cloudformation Template
+This template will setup a fully autoscaled Docker Swarm in AWS
+-   Template: [Docker Swarm CFN Setup](cfn_docker_swarm_autoscale.yml)
+-   Setup: Creates 1 Leader to Swarm Init, Optional 2 Additional Managers, and a Autoscaled Worker pool based on CPU usage
+
 ### Automated Projects
 Projects by Hearst Automation Team that use this Image
 
 *   [The Foreman Cloudformation](https://github.com/HearstAT/cfn_foreman) **In Progress**
 *   [The Foreman Docker Dev](https://github.com/HearstAT/docker_foreman_dev) **In Progress**
-*   Docker Swarm **Coming Soon**
 
 ## Contributing
 ### External Contributors
