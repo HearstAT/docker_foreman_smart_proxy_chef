@@ -383,7 +383,7 @@ Resources:
       Conditions:
       - Field: host-header
         Values:
-        - Sub: "{LeaderSubdomain}.${HostedZone}"
+        - Sub: "${LeaderSubdomain}.${HostedZone}"
       ListenerArn:
         Ref: SwarmALBListener
       Priority: 1
@@ -670,51 +670,48 @@ Resources:
 
             usermod ubuntu -aG docker
 
+            mkdir -p /root/.spam/
+            cat > '/root/.spam/config.yml' << EOF
+            ---
+            vpc: ${VPC}
+            listener_arn: ${SwarmALBListener}
+            foreman_user: ${ForemanUser}
+            foreman_password: ${ForemanPassword}
+            proxy_url: https://${LeaderSubdomain}.${HostedZone}
+            # Optional Settings
+            aws_region: ${AWS::Region}
+            aws_bucket: ${LeaderBucket}
+            protocol: HTTP
+            chef_url: ${CHEF_URL}
+            pem_path: /opt/chef
+            dest_pem: /usr/src/proxy/chef/org.pem
+            org_pem: pivotal.pem
+            org_client: pivotal
+            EOF
+
             ##########################################################
             # Leader Init
             ##########################################################
 
             if [ -n "${!LEADER_TAGS}" ]; then
-              docker swarm init
-              docker swarm join-token -q manager >> /tmp/manager.token
-              docker swarm join-token -q worker >> /tmp/worker.token
-              curl http://169.254.169.254/latest/meta-data/local-ipv4 >> /tmp/leader_ip.txt
-              aws s3 cp /tmp/leader_ip.txt s3://${LeaderBucket}/leader_data/leader_ip.txt || error_exit "[ERROR] - Failed to Copy Leader IP to S3"
-              aws s3 cp /tmp/manager.token s3://${LeaderBucket}/leader_data/manager.token || error_exit "[ERROR] - Failed to Copy Leader Manager Token to S3"
-              aws s3 cp /tmp/worker.token s3://${LeaderBucket}/leader_data/worker.token || error_exit "[ERROR] - Failed to Copy Leader Worker Token to S3"
-              ## Much more
-              docker service create --name portainer --publish 9000:9000 --constraint 'node.role == manager' --mount type=bind,src=//var/run/docker.sock,dst=/var/run/docker.sock portainer/portainer -H unix:///var/run/docker.sock
 
               PROXY_PORT='49152'
               PRIORITY='3'
 
               for org in '${ChefOrgs}'; do
 
-                docker service create --name ${!org}-foreman-chef-proxy \
-                  --publish ${!PROXY_PORT}:8000 \
-                  -e FOREMAN_URL='${ForemanUrl}' \
-                  -e CHEF_URL='${CHEF_URL}' \
-                  -e CHEF_ORG=${!org} \
-                  -e ORG_CLIENT='pivotal' \
-                  ## Needs to be org specific pems! Be careful with pivotal pem usage
-                  --mount type=bind,source=/opt/chef/pivotal.pem,destination=/usr/src/proxy/chef/org.pem \
-                  hearstat/chef-smart-proxy
+                spam chef create --org=$org \
+                                 --port=$PROXY_PORT \
+                                 --priority=$PRIORITY \
+                                 --targets=$INSTANCE_ID \
+                                 --swarm-init
 
-                aws elbv2 create-target-group --name ${!org}-foreman-chef-proxy --protocol HTTP --port ${!PROXY_PORT} --vpc-id ${VPC}
-                aws elbv2 create-rule --listener-arn ${SwarmALBListener} --priority ${!PRIORITY} --conditions Field=path-pattern,Values="/${!org}" --actions Type=forward,TargetGroupArn=${!org_group}
                 (( PROXY_PORT++ ))
                 (( PRIORITY++ ))
               done
-            fi
 
-            ##########################################################
-            # If not Leader, Copy Leader Data
-            ##########################################################
+              docker service create --name portainer --publish 9000:9000 --constraint 'node.role == manager' --mount type=bind,src=//var/run/docker.sock,dst=/var/run/docker.sock portainer/portainer -H unix:///var/run/docker.sock
 
-            if [ -z "${!LEADER_TAGS}" ]; then
-              aws s3 cp s3://${LeaderBucket}/leader_data/leader_ip.txt /tmp/leader_ip.txt || error_exit "[ERROR] - Failed to Copy Leader IP"
-              aws s3 cp s3://${LeaderBucket}/leader_data/manager.token /tmp/manager.token || error_exit "[ERROR] - Failed to Copy Leader Manager Token"
-              aws s3 cp s3://${LeaderBucket}/leader_data/worker.token /tmp/worker.token || error_exit "[ERROR] - Failed to Copy Leader Worker Token"
             fi
 
             ##########################################################
@@ -722,7 +719,10 @@ Resources:
             ##########################################################
 
             if [ -n "${!MANAGER_TAGS}" ]; then
-              docker swarm join --token $(cat /tmp/manager.token) $(cat /tmp/leader_ip.txt):2377
+              spam chef create --org=$org \
+                               --targets=$INSTANCE_ID \
+                               --swarm-join \
+                               --swarm-manager
             fi
 
             ##########################################################
@@ -730,7 +730,9 @@ Resources:
             ##########################################################
 
             if [ -z "${!LEADER_TAGS}" ] && [ -z "${!MANAGER_TAGS}" ]; then
-              docker swarm join --token $(cat /tmp/worker.token) $(cat /tmp/leader_ip.txt):2377
+              spam chef create --org=$org \
+                               --targets=$INSTANCE_ID \
+                               --swarm-join
             fi
 
             ##########################################################
